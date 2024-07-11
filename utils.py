@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import warnings
+from sklearn.base import BaseEstimator, ClassifierMixin, clone
 
 
 def delete_from_substring(string):
@@ -85,3 +86,54 @@ def relief(X, y, n_neighbors=10):
     feature_weights = (feature_weights - np.min(feature_weights)) / (np.max(feature_weights) - np.min(feature_weights))
 
     return pd.Series(feature_weights, index=X.columns).to_frame(name='Weights').reset_index()
+
+
+class CustomAdaBoost(BaseEstimator, ClassifierMixin):
+    def __init__(self, base_learners=None, n_estimators=50):
+        self.base_learners = base_learners
+        self.n_estimators = n_estimators
+
+    def fit(self, X, y):
+        self.learners_ = []
+        self.alphas_ = []
+        self.classes_ = np.unique(y)
+        n_samples, n_features = X.shape
+
+        # Initialize weights
+        sample_weights = np.ones(n_samples) / n_samples
+
+        for i in range(self.n_estimators):
+            learner = clone(self.base_learners[i % len(self.base_learners)])
+
+            if hasattr(learner, 'fit') and 'sample_weight' in learner.fit.__code__.co_varnames:
+                # If learner supports sample_weight
+                learner.fit(X, y, sample_weight=sample_weights)
+            else:
+                # Resample the dataset based on sample_weights
+                sample_indices = np.random.choice(np.arange(n_samples), size=n_samples, p=sample_weights)
+                X_resampled = X[sample_indices]
+                y_resampled = y[sample_indices]
+                learner.fit(X_resampled, y_resampled)
+
+            predictions = learner.predict(X)
+
+            incorrect = (predictions != y)
+            error = np.dot(sample_weights, incorrect) / np.sum(sample_weights)
+
+            if error > 0.5:
+                continue
+
+            alpha = 0.5 * np.log((1 - error) / error)
+            self.learners_.append(learner)
+            self.alphas_.append(alpha)
+
+            # Update sample weights
+            sample_weights *= np.exp(-alpha * y * predictions)
+            sample_weights /= np.sum(sample_weights)
+
+        return self
+
+    def predict(self, X):
+        learner_preds = np.array([alpha * learner.predict(X) for alpha, learner in zip(self.alphas_, self.learners_)])
+        final_predictions = np.sign(np.sum(learner_preds, axis=0))
+        return final_predictions
